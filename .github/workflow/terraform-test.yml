@@ -1,0 +1,116 @@
+name: Terraform CI/CD Tests
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual triggering
+
+env:
+  TF_LOG: INFO
+  AWS_REGION: ap-northeast-1
+
+jobs:
+  terraform-test:
+    name: Terraform Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          echo "${{ secrets.SSH_PUBLIC_KEY }}" > ~/.ssh/id_rsa.pub
+          chmod 600 ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa.pub
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.0
+
+      - name: Create tfvars file
+        run: |
+          cat > terraform.tfvars << EOF
+          aws_region      = "${{ env.AWS_REGION }}"
+          aws_profile     = ""  # Not needed when using GitHub Actions credentials
+          resource_prefix = "ci-test"
+          
+          ec2_instance_type = "t3.small"  # Using smaller instance to save costs in CI
+          ec2_ami_id        = "ami-0599b6e53ca798bb2"
+          
+          s3_log_expiration_days = 7  # Short retention for testing
+          
+          waf_scope = "REGIONAL"
+          
+          default_tags = {
+            division   = "platform"
+            org        = "engineering"
+            keep-until = "2026-01-01"
+            team       = "observability"
+            project    = "elastic-monitoring"
+          }
+          EOF
+          chmod +x test-waf.sh
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Format Check
+        id: fmt
+        run: terraform fmt -check
+        continue-on-error: true
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -out=tfplan
+        continue-on-error: true
+
+      - name: Terraform Apply
+        id: apply
+        run: terraform apply -auto-approve tfplan
+        
+      - name: Wait for Resources to be Ready
+        run: sleep 120  # Wait for resources to be fully provisioned and WAF to be associated
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Test WAF with shell script
+        run: |
+          PROTECTED_URL=$(terraform output -raw waf_protected_url)
+          ./test-waf.sh $PROTECTED_URL
+          # Wait for logs to be processed
+          sleep 60
+
+      - name: Test WAF with Python script
+        run: |
+          python test_waf.py --requests 20 --max-workers 5
+          # Wait for logs to be processed
+          sleep 60
+
+      - name: Terraform Destroy
+        run: terraform destroy -auto-approve
+        if: always()  # Always run this step, even if previous steps fail

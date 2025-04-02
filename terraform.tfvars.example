@@ -1,0 +1,21 @@
+# AWS Region
+aws_region = "ap-northeast-1"
+
+# AWS Profile
+aws_profile = "default"
+
+# Resource prefix
+resource_prefix = "tf-waf-s3-sqs-elasticagent"
+
+# EC2 Configuration
+ec2_instance_type = "t3.micro"
+ec2_ami_id = "ami-0599b6e53ca798bb2"
+
+# S3 Configuration
+s3_log_expiration_days = 90
+
+# WAF Configuration
+waf_scope = "REGIONAL" # Can be REGIONAL or CLOUDFRONT
+
+# Tags
+default_tags = {}
